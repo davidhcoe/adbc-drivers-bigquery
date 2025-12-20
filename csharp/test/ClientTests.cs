@@ -214,6 +214,93 @@ namespace AdbcDrivers.BigQuery.Tests
             }
         }
 
+        /// <summary>
+        /// Validates that the client can perform paged queries using SQL LIMIT and OFFSET
+        /// without knowing the total result count in advance.
+        /// </summary>
+        [SkippableFact, Order(5)]
+        public void CanClientExecutePagedQuery()
+        {
+            foreach (BigQueryTestEnvironment environment in _environments)
+            {
+                using (AdbcClient.AdbcConnection adbcConnection = GetAdbcConnection(environment))
+                {
+                    adbcConnection.Open();
+                    int records = 5000;
+
+                    // Create a test query - pretend we don't know how many results there are
+                    string baseQuery = $"SELECT number FROM UNNEST(GENERATE_ARRAY(1, {records})) AS number ORDER BY number";
+                    int pageSize = 100;
+
+                    List<int> allResults = new List<int>();
+                    int pageCount = 0;
+                    int offset = 0;
+                    bool hasMorePages = true;
+
+                    _outputHelper.WriteLine($"Testing SQL-based paged query for environment: {environment.Name}");
+                    _outputHelper.WriteLine($"Page size: {pageSize}");
+
+                    // Keep fetching pages until we get fewer rows than the page size
+                    while (hasMorePages)
+                    {
+                        pageCount++;
+                        _outputHelper.WriteLine($"Fetching page {pageCount} (offset {offset})...");
+
+                        using (AdbcClient.AdbcCommand command = adbcConnection.CreateCommand())
+                        {
+                            // Add LIMIT and OFFSET to the query for pagination
+                            command.CommandText = $"{baseQuery} LIMIT {pageSize + 1} OFFSET {offset}";
+
+                            using (var reader = command.ExecuteReader())
+                            {
+                                int rowsInPage = 0;
+                                while (reader.Read())
+                                {
+                                    int number = reader.GetInt32(0);
+                                    allResults.Add(number);
+                                    rowsInPage++;
+                                }
+
+                                _outputHelper.WriteLine($"Page {pageCount} retrieved {rowsInPage} rows");
+
+                                if (rowsInPage > pageSize)
+                                {
+                                    // There are more results - only use first pageSize rows
+                                    allResults.RemoveAt(allResults.Count - 1); // Remove the extra row
+                                    hasMorePages = true;
+                                }
+                                else
+                                {
+                                    hasMorePages = false;
+                                }
+
+                                if (hasMorePages)
+                                {
+                                    // Move to the next page
+                                    offset += pageSize;
+                                }
+                            }
+                        }
+                    }
+
+                    _outputHelper.WriteLine($"Total pages retrieved: {pageCount}");
+                    _outputHelper.WriteLine($"Total rows retrieved: {allResults.Count}");
+
+                    // For this test, we know there should be 5000 results
+                    // But in real scenarios, you wouldn't know this upfront
+                    Assert.Equal(records, allResults.Count);
+
+                    // Verify the results are in the correct order
+                    for (int i = 0; i < allResults.Count; i++)
+                    {
+                        Assert.Equal(i + 1, allResults[i]);
+                    }
+
+                    _outputHelper.WriteLine($"SQL-based paging test completed successfully for environment: {environment.Name}");
+                }
+            }
+        }
+
         private AdbcClient.AdbcConnection GetAdbcConnection(
             BigQueryTestEnvironment environment,
             bool includeTableConstraints = true
